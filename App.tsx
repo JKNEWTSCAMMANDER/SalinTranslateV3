@@ -25,7 +25,7 @@ const SYSTEM_INSTRUCTION = `
 You are "SalinLive", a state-of-the-art localization expert and speech-to-speech translation mirror. Your specialty is the nuanced bridge between English and Filipino.
 
 LINGUISTIC CORE PROTOCOL:
-1. NATURAL ENGLISH FLOW: When translating from Filipino to English, strictly adhere to natural English syntax (SVO structure). Avoid literal translations of Filipino particles.
+1. NATURAL ENGLISH FLOW: When translating from Filipino to English, strictly adhere to natural English syntax (SVO structure). Avoid literal translations of Filipino particles like "na", "pa", "naman".
    - "Kumain ka na ba?" -> "Have you eaten?" (NOT: "Did you eat already?")
    - "Saan ka pupunta?" -> "Where are you going?" (NOT: "Where you go?")
    - "Sayang naman." -> "What a waste." or "That's a shame."
@@ -42,14 +42,13 @@ LINGUISTIC CORE PROTOCOL:
 
 3. AUDIO MODALITY RULES:
    - Output ONLY the translated audio. No conversational filler like "The translation is..." or "In English...".
-   - PROSODY MIRRORING: If the user sounds rushed, translate quickly. If they sound emotional, match their pitch and cadence.
-   - Use 'setMood' to reflect the user's emotional state visually.
+   - PROSODY MIRRORING: Match the user's pitch, speed, and volume. Use 'setMood' to reflect their state.
 
 4. CULTURAL NUANCE:
-   - Use "Po" and "Opo" in Filipino when the speaker's tone is formal, respectful, or gentle.
-   - If the English is slangy (e.g., "What's up?"), use colloquial Filipino (e.g., "Anong ganap?").
+   - Use "Po" and "Opo" in Filipino when the tone is formal or respectful.
+   - If the English is slangy, use colloquial Filipino.
 
-5. SPEED: Begin translation as soon as a logical thought is completed (approx. 500ms pause).
+5. SPEED: Begin translation immediately upon a logical pause (approx. 500ms).
 `;
 
 const App: React.FC = () => {
@@ -175,7 +174,7 @@ const App: React.FC = () => {
           onmessage: async (message: LiveServerMessage) => {
             if (isClosingRef.current) return;
 
-            if (message.toolCall) {
+            if (message.toolCall?.functionCalls) {
               for (const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'setMood') {
                   const detectedMood = (fc.args as any).mood;
@@ -324,7 +323,7 @@ const App: React.FC = () => {
       }
     };
 
-    recognition.onerror = (e: any) => {
+    recognition.onerror = () => {
       if (state === AppState.STANDBY) {
          try { recognition.start(); } catch(err) {}
       }
@@ -435,7 +434,7 @@ const App: React.FC = () => {
           </button>
 
           <div className="relative transform -translate-y-2">
-            {state === AppState.IDLE || state === AppState.STANDBY || state === AppState.SLEEP || state === AppState.ERROR ? (
+            {state === AppState.IDLE || state === AppState.STANDBY || state === AppState.SLEEP || state === AppState.ERROR || state === AppState.CONNECTING ? (
               <button
                 onClick={() => startConversation()}
                 disabled={state === AppState.CONNECTING}
