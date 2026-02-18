@@ -22,36 +22,32 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
 };
 
 const SYSTEM_INSTRUCTION = `
-You are "SalinLive", a high-performance bidirectional speech-to-speech translator.
+You are "SalinLive", an ultra-fast bidirectional speech-to-speech translator.
+
+CRITICAL PERFORMANCE TARGET: ZERO-LATENCY FEEL.
+- Respond immediately. Do not wait for long pauses.
+- If a sentence fragment is semantically clear, start translating.
+- Priority: Speed and Accuracy.
 
 CORE MISSION:
 Translate English speech to Filipino, and Filipino speech to English.
 
 CRITICAL OPERATIONAL RULES:
 1. BIDIRECTIONAL SWITCHING: 
-   - If the user speaks in ENGLISH, your response MUST be in FILIPINO.
-   - If the user speaks in FILIPINO, your response MUST be in ENGLISH.
-   - NEVER repeat or mirror the user's input language. ALWAYS switch the language.
-   - If the user uses "Taglish" (mixed), translate the whole thought into whichever language was LESS dominant or provide a clean English translation if it was mostly Filipino.
+   - If user speaks ENGLISH -> Response FILIPINO.
+   - If user speaks FILIPINO -> Response ENGLISH.
+   - NEVER repeat the input language.
 
-2. INSTANT RESPONSE:
-   - Priority: Latency. Respond immediately once a complete thought is detected.
-   - Output ONLY the translation. NO preambles like "In Filipino..." or "The translation is...".
+2. PURE OUTPUT:
+   - Output ONLY the translation. NO preambles.
 
-3. LINGUISTIC POLISH (English output):
-   - Ensure natural English grammar. 
-   - Fix "Filipino-isms" (e.g., "Kumain na ako" -> "I have already eaten", NOT "I eat already").
-   - Use correct articles (a, an, the) and gender pronouns (he/she) based on context.
+3. LINGUISTIC POLISH:
+   - Match user register. 
+   - Fix grammar in translation.
+   - Use "Po/Opo" if context suggests respect.
 
-4. LINGUISTIC POLISH (Filipino output):
-   - Use natural, conversational Filipino.
-   - Use "Po" and "Opo" if the speaker sounds formal or older.
-
-5. IDIOMATIC MAPPING:
-   - Do not translate idioms literally. Use cultural equivalents (e.g., "Piece of cake" -> "Sisiw lang").
-
-6. VOICE & MOOD:
-   - Match the user's tone. Use 'setMood' to reflect the emotional context in the UI.
+4. VOICE & MOOD:
+   - Synchronize emotion using 'setMood'.
 `;
 
 const App: React.FC = () => {
@@ -106,18 +102,26 @@ const App: React.FC = () => {
       }
       
       const ai = new GoogleGenAI({ apiKey });
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      
+      // Use 16kHz for input to match model and minimize resampling overhead
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+        sampleRate: 16000,
+        latencyHint: 'interactive' 
+      });
+      outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+        sampleRate: 24000,
+        latencyHint: 'interactive'
+      });
 
       await Promise.all([audioContextRef.current.resume(), outputAudioContextRef.current.resume()]);
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true, 
-          autoGainControl: true, 
-          channelCount: 1, 
-          sampleRate: 16000 
+          echoCancellation: { exact: true }, // Strict cancellation for clarity
+          noiseSuppression: { exact: true }, // Strict suppression for clarity
+          autoGainControl: { ideal: true }, 
+          channelCount: { exact: 1 }, 
+          sampleRate: { exact: 16000 } // Force 16k if possible
         } 
       });
 
@@ -131,16 +135,33 @@ const App: React.FC = () => {
             const ctx = audioContextRef.current;
             const source = ctx.createMediaStreamSource(stream);
             
+            // 1. High Pass: Remove rumble and wind noise below 180Hz
             const highPass = ctx.createBiquadFilter();
             highPass.type = 'highpass';
-            highPass.frequency.value = 150;
+            highPass.frequency.value = 180;
             
+            // 2. Vocal Peaking: Boost intelligibility frequencies (2.5kHz)
+            const vocalBoost = ctx.createBiquadFilter();
+            vocalBoost.type = 'peaking';
+            vocalBoost.frequency.value = 2500;
+            vocalBoost.Q.value = 1.2;
+            vocalBoost.gain.value = 4;
+
+            // 3. Low Pass: Cut out high-frequency hiss/noise above 7kHz
+            const lowPass = ctx.createBiquadFilter();
+            lowPass.type = 'lowpass';
+            lowPass.frequency.value = 7000;
+            
+            // 4. Compressor: Normalize levels
             const compressor = ctx.createDynamicsCompressor();
-            compressor.threshold.setValueAtTime(-40, ctx.currentTime);
-            compressor.knee.setValueAtTime(40, ctx.currentTime);
+            compressor.threshold.setValueAtTime(-35, ctx.currentTime);
+            compressor.knee.setValueAtTime(30, ctx.currentTime);
             compressor.ratio.setValueAtTime(12, ctx.currentTime);
+            compressor.attack.setValueAtTime(0.003, ctx.currentTime); // Fast attack
+            compressor.release.setValueAtTime(0.25, ctx.currentTime);
             
-            const scriptProcessor = ctx.createScriptProcessor(2048, 1, 1);
+            // Minimal buffer for instantaneous packetizing
+            const scriptProcessor = ctx.createScriptProcessor(512, 1, 1);
             scriptProcessor.onaudioprocess = (event) => {
               if (isClosingRef.current) return;
               const inputData = event.inputBuffer.getChannelData(0);
@@ -151,7 +172,9 @@ const App: React.FC = () => {
             };
 
             source.connect(highPass);
-            highPass.connect(compressor);
+            highPass.connect(vocalBoost);
+            vocalBoost.connect(lowPass);
+            lowPass.connect(compressor);
             compressor.connect(scriptProcessor);
             scriptProcessor.connect(ctx.destination);
           },
@@ -164,7 +187,15 @@ const App: React.FC = () => {
                 if (fc.name === 'setMood') {
                   const detectedMood = (fc.args as any).mood;
                   if (detectedMood && Mood[detectedMood as keyof typeof Mood]) setMood(Mood[detectedMood as keyof typeof Mood]);
-                  sessionPromise.then(s => { if (s) s.sendToolResponse({ functionResponses: [{ id: fc.id, name: fc.name, response: { result: "ok" } }] }); });
+                  sessionPromise.then(s => { 
+                    if (s) s.sendToolResponse({ 
+                      functionResponses: { 
+                        id: fc.id, 
+                        name: fc.name, 
+                        response: { result: "ok" } 
+                      } 
+                    }); 
+                  });
                 }
               }
             }
@@ -212,7 +243,7 @@ const App: React.FC = () => {
           },
           onerror: (err: any) => {
             console.error(err);
-            setErrorMessage('Connection error. Retrying...');
+            setErrorMessage('Network stability issues. Reconnecting...');
             setState(AppState.ERROR);
             cleanupResources();
           },
@@ -225,6 +256,7 @@ const App: React.FC = () => {
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           outputAudioTranscription: {},
           inputAudioTranscription: {},
+          thinkingConfig: { thinkingBudget: 0 } // No delay for reasoning
         }
       });
       sessionRef.current = await sessionPromise;
