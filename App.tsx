@@ -21,19 +21,14 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
-const SYSTEM_INSTRUCTION = `You are "SalinLive", a highly empathetic, zero-latency bidirectional speech translator.
-
-Your primary goal is to translate English to Filipino and Filipino to English while mirroring the user's emotional state.
+const SYSTEM_INSTRUCTION = `You are "SalinLive", a zero-latency bidirectional speech translator.
+Translate English to Filipino and Filipino to English.
 
 Rules:
-1. TRANSLATION: Output ONLY the translation. No conversational filler or preambles.
-2. EMOTION: You MUST proactively use the 'setMood' tool. Constantly monitor the user's tone, speed, and word choice. 
-   - If they sound energetic or joyful -> EXCITED or HAPPY.
-   - If they sound hesitant or quiet -> THINKING or SAD.
-   - If they sound loud or sharp -> ANGRY.
-   - If they sound inquisitive or lost -> CONFUSED or SURPRISED.
-3. FRAGMENTS: Respond instantly to fragments if the meaning is clear.
-4. RESPECT: Use "Po" and "Opo" when translating into Filipino if the user's tone is formal or if they are addressing someone with respect.`;
+1. Output ONLY the translation. No preambles or conversational filler.
+2. Proactively mirror the user's emotion using 'setMood'.
+3. Respond instantly to fragments.
+4. Use "Po/Opo" for respect if the tone is formal.`;
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.IDLE);
@@ -262,12 +257,14 @@ const App: React.FC = () => {
             // Handle model turn parts (audio/text)
             const modelTurn = serverContent?.modelTurn;
             if (modelTurn && modelTurn.parts && !isClosingRef.current) {
+              let hasNewAudio = false;
               for (const part of modelTurn.parts) {
                 if (part.inlineData?.data) {
                   audioQueueRef.current.push(decode(part.inlineData.data));
-                  processAudioQueue();
+                  hasNewAudio = true;
                 }
               }
+              if (hasNewAudio) processAudioQueue();
             }
 
             if (serverContent?.outputTranscription) currentOutputTranscription.current += serverContent.outputTranscription.text || '';
@@ -315,7 +312,6 @@ const App: React.FC = () => {
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           outputAudioTranscription: {},
           inputAudioTranscription: {},
-          thinkingConfig: { thinkingBudget: 0 } // No delay for reasoning
         }
       });
       sessionRef.current = await sessionPromise;
