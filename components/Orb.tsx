@@ -4,17 +4,20 @@ import { AppState, Mood } from '../types';
 interface OrbProps {
   state: AppState;
   mood: Mood;
+  isMuted?: boolean;
 }
 
-const Orb: React.FC<OrbProps> = ({ state, mood }) => {
+const Orb: React.FC<OrbProps> = ({ state, mood, isMuted = false }) => {
   const [tilt, setTilt] = useState(0);
   const [blink, setBlink] = useState(false);
   const [gaze, setGaze] = useState({ x: 0, y: 0 });
   const [mouthJitter, setMouthJitter] = useState(0);
   const idleTimerRef = useRef<number | null>(null);
 
+  const effectiveState = isMuted ? AppState.IDLE : state;
+
   useEffect(() => {
-    if (state === AppState.IDLE || state === AppState.STANDBY) {
+    if (effectiveState === AppState.IDLE || effectiveState === AppState.STANDBY) {
       const scheduleNextBlink = () => {
         const nextBlinkIn = 2000 + Math.random() * 5000;
         idleTimerRef.current = window.setTimeout(() => {
@@ -27,7 +30,7 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
       const scheduleNextGaze = () => {
         const nextGazeIn = 3000 + Math.random() * 4000;
         setTimeout(() => {
-          if (state === AppState.IDLE || state === AppState.STANDBY) {
+          if (effectiveState === AppState.IDLE || effectiveState === AppState.STANDBY) {
             setGaze({
               x: (Math.random() - 0.5) * 6,
               y: (Math.random() - 0.5) * 3
@@ -46,15 +49,15 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
     }
 
     return () => { if (idleTimerRef.current) clearTimeout(idleTimerRef.current); };
-  }, [state]);
+  }, [effectiveState]);
 
   useEffect(() => {
     let interval: any;
-    if (state === AppState.LISTENING) {
+    if (effectiveState === AppState.LISTENING) {
       interval = setInterval(() => {
         setTilt(prev => (prev === 4 ? -4 : 4));
       }, mood === Mood.HAPPY || mood === Mood.EXCITED ? 800 : 2000);
-    } else if (state === AppState.SPEAKING) {
+    } else if (effectiveState === AppState.SPEAKING) {
       interval = setInterval(() => {
         setMouthJitter(Math.random() * 4);
       }, 60);
@@ -63,12 +66,15 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
       setMouthJitter(0);
     }
     return () => clearInterval(interval);
-  }, [state, mood]);
+  }, [effectiveState, mood]);
 
   const getColors = () => {
-    if (state === AppState.ERROR) return 'from-red-800 to-red-950 shadow-red-900/50';
-    if (state === AppState.CONNECTING) return 'from-yellow-400 to-orange-500 animate-thinking';
-    if (state === AppState.SLEEP) return 'from-slate-800 to-slate-900';
+    if (effectiveState === AppState.ERROR) return 'from-red-800 to-red-950 shadow-red-900/50';
+    if (effectiveState === AppState.RECONNECTING) return 'from-orange-600 to-orange-900 shadow-orange-700/50 animate-pulse';
+    if (effectiveState === AppState.CONNECTING) return 'from-yellow-400 to-orange-500 animate-thinking';
+    if (effectiveState === AppState.SLEEP) return 'from-slate-800 to-slate-900';
+
+    if (isMuted) return 'from-slate-700 to-slate-800 shadow-slate-900/50 grayscale-[0.5]';
 
     switch (mood) {
       case Mood.HAPPY:
@@ -85,7 +91,7 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
       case Mood.CONFUSED:
         return 'from-emerald-400 via-teal-600 to-slate-900 shadow-teal-500/30';
       default:
-        return state === AppState.LISTENING 
+        return effectiveState === AppState.LISTENING 
           ? 'from-cyan-400 via-blue-500 to-indigo-600 shadow-cyan-500/70'
           : 'from-indigo-600 to-purple-800 shadow-indigo-500/40';
     }
@@ -145,11 +151,18 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
         break;
     }
 
-    if (state === AppState.SLEEP) {
+    if (effectiveState === AppState.SLEEP) {
       browL = "M25 40 Q35 42 45 40";
       browR = "M55 40 Q65 42 75 40";
       mouthPath = "M45 78 Q50 80 55 78";
       pupilSize = 0;
+    }
+
+    if (effectiveState === AppState.RECONNECTING) {
+      browL = "M25 35 Q35 40 45 35";
+      browR = "M55 35 Q65 40 75 35";
+      mouthPath = "M40 80 Q50 75 60 80";
+      pupilSize = 3;
     }
 
     return (
@@ -165,7 +178,7 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
         <g transform={`translate(${gaze.x}, ${gaze.y})`}>
           <circle cx="35" cy="50" r="9" className={eyeBaseClass} />
           <circle cx="65" cy="50" r="9" className={eyeBaseClass} />
-          {!blink && state !== AppState.SLEEP && (
+          {!blink && effectiveState !== AppState.SLEEP && (
             <>
               <circle cx="35" cy="50" r={pupilSize} className={pupilClass} />
               <circle cx="65" cy="50" r={pupilSize} className={pupilClass} />
@@ -179,12 +192,12 @@ const Orb: React.FC<OrbProps> = ({ state, mood }) => {
 
   return (
     <div 
-      className={`relative w-52 h-52 rounded-full bg-gradient-to-br ${getColors()} transition-all duration-1000 flex items-center justify-center overflow-hidden shadow-2xl z-10`}
+      className={`relative w-52 h-52 rounded-full bg-gradient-to-br ${getColors()} transition-all duration-300 flex items-center justify-center overflow-hidden shadow-2xl z-10`}
       style={{ transform: `rotate(${tilt}deg)` }}
     >
       <div className="w-36 h-36">{renderFace()}</div>
       {/* Mood specific glow pulses */}
-      <div className={`absolute inset-0 rounded-full opacity-30 blur-3xl transition-all duration-1000 ${
+      <div className={`absolute inset-0 rounded-full opacity-30 blur-3xl transition-all duration-300 ${
         mood === Mood.HAPPY || mood === Mood.EXCITED ? 'bg-yellow-400 animate-pulse scale-150' :
         mood === Mood.ANGRY ? 'bg-red-600 animate-pulse scale-110' :
         mood === Mood.SAD ? 'bg-blue-600 scale-90' :
