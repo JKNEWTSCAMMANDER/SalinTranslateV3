@@ -33,9 +33,12 @@ const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.IDLE);
   const [mood, setMood] = useState<Mood>(Mood.NEUTRAL);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const [isMuted, setIsMuted] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [reconnectCount, setReconnectCount] = useState(0);
   
   const moodRef = useRef<Mood>(Mood.NEUTRAL);
+  const isMutedRef = useRef<boolean>(false);
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -47,9 +50,11 @@ const App: React.FC = () => {
   const isClosingRef = useRef<boolean>(false);
 
   useEffect(() => { moodRef.current = mood; }, [mood]);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
   const cleanupResources = useCallback(async () => {
     isClosingRef.current = true;
+    setIsMuted(false);
     if (sessionRef.current) { try { sessionRef.current.close(); } catch (e) {} sessionRef.current = null; }
     if (audioContextRef.current) { try { await audioContextRef.current.close(); } catch (e) {} audioContextRef.current = null; }
     if (outputAudioContextRef.current) { try { await outputAudioContextRef.current.close(); } catch (e) {} outputAudioContextRef.current = null; }
@@ -109,6 +114,7 @@ const App: React.FC = () => {
         callbacks: {
           onopen: async () => {
             setState(AppState.LISTENING);
+            setReconnectCount(0);
             if (!audioContextRef.current) return;
             
             const ctx = audioContextRef.current;
@@ -145,11 +151,11 @@ const App: React.FC = () => {
               const pcmWorker = new AudioWorkletNode(ctx, 'pcm-processor');
               
               pcmWorker.port.onmessage = (event) => {
-                if (isClosingRef.current) return;
+                if (isClosingRef.current || isMutedRef.current) return;
                 const inputData = event.data;
                 const pcmBlob = createPcmBlob(inputData);
                 sessionPromise.then((session) => { 
-                  if (session && !isClosingRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                  if (session && !isClosingRef.current && !isMutedRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
                 }).catch(() => {});
               };
 
@@ -164,11 +170,11 @@ const App: React.FC = () => {
               // Fallback to ScriptProcessor if Worklet fails
               const scriptProcessor = ctx.createScriptProcessor(512, 1, 1);
               scriptProcessor.onaudioprocess = (event) => {
-                if (isClosingRef.current) return;
+                if (isClosingRef.current || isMutedRef.current) return;
                 const inputData = event.inputBuffer.getChannelData(0);
                 const pcmBlob = createPcmBlob(inputData);
                 sessionPromise.then((session) => { 
-                  if (session && !isClosingRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                  if (session && !isClosingRef.current && !isMutedRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
                 }).catch(() => {});
               };
               source.connect(highPass);
@@ -243,12 +249,23 @@ const App: React.FC = () => {
             }
           },
           onerror: (err: any) => {
-            console.error(err);
-            setErrorMessage('Network stability issues. Reconnecting...');
-            setState(AppState.ERROR);
-            cleanupResources();
+            console.error("Session Error:", err);
+            if (reconnectCount < 3) {
+              setReconnectCount(prev => prev + 1);
+              setState(AppState.RECONNECTING);
+              setTimeout(() => startConversation(), 2000);
+            } else {
+              setErrorMessage('Persistent network issue. Please check your connection and try again.');
+              setState(AppState.ERROR);
+              cleanupResources();
+            }
           },
-          onclose: () => { if (![AppState.SLEEP, AppState.ERROR].includes(state)) setState(AppState.IDLE); }
+          onclose: () => { 
+            if (![AppState.SLEEP, AppState.ERROR, AppState.RECONNECTING].includes(state)) {
+              setState(AppState.IDLE);
+              setReconnectCount(0);
+            }
+          }
         },
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
@@ -262,7 +279,14 @@ const App: React.FC = () => {
       });
       sessionRef.current = await sessionPromise;
     } catch (error: any) {
-      setErrorMessage(error.message);
+      console.error("Start Conversation Error:", error);
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        setErrorMessage("Microphone access denied. Please click the 'lock' icon in your browser's address bar and set Microphone to 'Allow', then refresh.");
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        setErrorMessage("No microphone found. Please connect a microphone and try again.");
+      } else {
+        setErrorMessage(error.message || "An unexpected error occurred.");
+      }
       setState(AppState.ERROR);
       cleanupResources();
     }
@@ -299,7 +323,7 @@ const App: React.FC = () => {
     } else { enableWakeWord(); }
   };
 
-  const isInactive = [AppState.IDLE, AppState.STANDBY, AppState.SLEEP, AppState.ERROR, AppState.CONNECTING].includes(state);
+  const isInactive = [AppState.IDLE, AppState.STANDBY, AppState.SLEEP, AppState.ERROR, AppState.CONNECTING, AppState.RECONNECTING].includes(state);
 
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto bg-slate-900 overflow-hidden shadow-2xl border-x border-slate-800 font-sans select-none touch-none">
@@ -319,10 +343,12 @@ const App: React.FC = () => {
               mood === Mood.ANGRY ? 'text-rose-400 bg-rose-400/10' : 'text-slate-500'
             }`}>{mood}</div>
             <div className={`w-2.5 h-2.5 rounded-full transition-all duration-500 ${
+              isMuted ? 'bg-amber-500 shadow-[0_0_15px_orange]' :
               state === AppState.LISTENING ? 'bg-cyan-400 shadow-[0_0_15px_cyan]' : 
               state === AppState.STANDBY ? 'bg-indigo-400 shadow-[0_0_15px_indigo]' :
               state === AppState.SPEAKING ? 'bg-rose-400 shadow-[0_0_15px_rose] scale-125 animate-pulse' :
               state === AppState.CONNECTING ? 'bg-yellow-400 shadow-[0_0_15px_yellow] animate-thinking' :
+              state === AppState.RECONNECTING ? 'bg-orange-500 shadow-[0_0_15px_orange] animate-pulse' :
               state === AppState.ERROR ? 'bg-rose-600' : 'bg-slate-700'
             }`}></div>
         </div>
@@ -330,25 +356,30 @@ const App: React.FC = () => {
 
       <main className="flex-1 flex flex-col relative overflow-hidden">
         <div className="flex-[2] flex flex-col items-center justify-center relative">
-          <Orb state={state} mood={mood} />
+          <Orb state={state} mood={mood} isMuted={isMuted} />
           <div className="h-12 mt-8 text-center">
-            {state === AppState.STANDBY ? <span className="text-[10px] text-indigo-400 font-black uppercase tracking-[0.3em] animate-pulse">"Hoy Salin!"</span> :
+            {isMuted ? <span className="text-[9px] text-amber-500 font-bold uppercase tracking-[0.2em]">Not Listening</span> :
+             state === AppState.STANDBY ? <span className="text-[10px] text-indigo-400 font-black uppercase tracking-[0.3em] animate-pulse">"Hoy Salin!"</span> :
              state === AppState.SPEAKING ? <span className="text-[9px] text-rose-400 font-bold uppercase tracking-[0.2em]">Mirroring...</span> :
              state === AppState.LISTENING ? <span className="text-[9px] text-cyan-400 font-bold uppercase tracking-[0.2em]">Listening...</span> :
-             state === AppState.CONNECTING ? <span className="text-[9px] text-yellow-400 font-bold uppercase tracking-[0.2em]">Thinking...</span> : null}
+             state === AppState.CONNECTING ? <span className="text-[9px] text-yellow-400 font-bold uppercase tracking-[0.2em]">Thinking...</span> : 
+             state === AppState.RECONNECTING ? <span className="text-[9px] text-orange-500 font-bold uppercase tracking-[0.2em]">Reconnecting...</span> : null}
           </div>
         </div>
 
         <div className="flex-[3] flex flex-col overflow-hidden px-4 mb-24 z-20"><Transcript entries={transcripts} /></div>
 
         <div className="absolute bottom-0 left-0 right-0 px-8 py-8 flex items-center justify-between bg-gradient-to-t from-slate-950 via-slate-950 to-transparent z-30">
-          <button onClick={toggleStandby} disabled={![AppState.IDLE, AppState.STANDBY, AppState.ERROR].includes(state)}
-            className={`flex flex-col items-center gap-1.5 transition-all ${state === AppState.STANDBY ? 'text-indigo-400 scale-110' : 'text-slate-600 hover:text-slate-400'} disabled:opacity-20`}>
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all ${state === AppState.STANDBY ? 'border-indigo-500/50 bg-indigo-500/10 shadow-[0_0_20px_rgba(99,102,241,0.2)]' : 'border-slate-800 bg-slate-900/50'}`}>
-              <i className="fas fa-bolt-lightning text-sm"></i>
-            </div>
-            <span className="text-[8px] font-black uppercase tracking-[0.2em]">STANDBY</span>
-          </button>
+          <div className="flex flex-col items-center gap-1.5">
+            <button 
+              onClick={() => setIsMuted(!isMuted)} 
+              disabled={isInactive}
+              className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all ${isMuted ? 'border-amber-500/50 bg-amber-500/10 text-amber-500 shadow-[0_0_20px_rgba(245,158,11,0.2)]' : 'border-slate-800 bg-slate-900/50 text-slate-600'} disabled:opacity-20`}
+            >
+              <i className={`fas ${isMuted ? 'fa-microphone-slash' : 'fa-microphone'} text-sm`}></i>
+            </button>
+            <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-600">{isMuted ? 'RESUME' : 'STOP LISTENING'}</span>
+          </div>
 
           <div className="relative transform -translate-y-2">
             {isInactive ? (
@@ -363,12 +394,13 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <button onClick={() => setTranscripts([])} className="flex flex-col items-center gap-1.5 text-slate-600 hover:text-slate-400">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/50">
-              <i className="fas fa-rotate-right text-sm"></i>
-            </div>
-            <span className="text-[8px] font-black uppercase tracking-[0.2em]">CLEAR</span>
-          </button>
+          <div className="flex flex-col items-center gap-1.5">
+            <button onClick={toggleStandby} disabled={![AppState.IDLE, AppState.STANDBY, AppState.ERROR].includes(state)}
+              className={`w-12 h-12 rounded-full flex items-center justify-center border transition-all ${state === AppState.STANDBY ? 'border-indigo-500/50 bg-indigo-500/10 text-indigo-400 shadow-[0_0_20px_rgba(99,102,241,0.2)]' : 'border-slate-800 bg-slate-900/50 text-slate-600'} disabled:opacity-20`}>
+              <i className="fas fa-bolt-lightning text-sm"></i>
+            </button>
+            <span className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-600">STANDBY</span>
+          </div>
         </div>
       </main>
 
