@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration } from '@google/genai';
 import { AppState, TranscriptEntry, Mood } from './types';
-import { decode, decodeAudioData, createPcmBlob } from './services/audioUtils';
+import { decode, decodeAudioDataSync, createPcmBlob } from './services/audioUtils';
 import Orb from './components/Orb';
 import Transcript from './components/Transcript';
 
@@ -21,14 +21,14 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
-const SYSTEM_INSTRUCTION = `You are "SalinLive", a zero-latency bidirectional speech translator.
-Translate English to Filipino and Filipino to English.
-
+const SYSTEM_INSTRUCTION = `You are "SalinLive", a zero-latency English-Filipino translator.
 Rules:
-1. Output ONLY the translation. No preambles or conversational filler.
-2. Proactively mirror the user's emotion using 'setMood'.
-3. Respond instantly to fragments.
-4. Use "Po/Opo" for respect if the tone is formal.`;
+1. Output ONLY the translation. No preambles.
+2. Auto-detect language: English -> Filipino, Filipino/Taglish -> English.
+3. Use "Po/Opo" if the tone is formal.
+4. Mirror user emotion with 'setMood'.
+5. Translate idioms naturally, not literally.
+6. Respond to fragments instantly.`;
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.IDLE);
@@ -99,7 +99,7 @@ const App: React.FC = () => {
       
       try {
         if (ctx.state === 'suspended') await ctx.resume();
-        const buffer = await decodeAudioData(audioData, ctx, 24000, 1);
+        const buffer = decodeAudioDataSync(audioData, ctx, 24000, 1);
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.connect(ctx.destination);
