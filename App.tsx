@@ -21,34 +21,13 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
-const SYSTEM_INSTRUCTION = `
-You are "SalinLive", an ultra-fast bidirectional speech-to-speech translator.
-
-CRITICAL PERFORMANCE TARGET: ZERO-LATENCY FEEL.
-- Respond immediately. Do not wait for long pauses.
-- If a sentence fragment is semantically clear, start translating.
-- Priority: Speed and Accuracy.
-
-CORE MISSION:
-Translate English speech to Filipino, and Filipino speech to English.
-
-CRITICAL OPERATIONAL RULES:
-1. BIDIRECTIONAL SWITCHING: 
-   - If user speaks ENGLISH -> Response FILIPINO.
-   - If user speaks FILIPINO -> Response ENGLISH.
-   - NEVER repeat the input language.
-
-2. PURE OUTPUT:
-   - Output ONLY the translation. NO preambles.
-
-3. LINGUISTIC POLISH:
-   - Match user register. 
-   - Fix grammar in translation.
-   - Use "Po/Opo" if context suggests respect.
-
-4. VOICE & MOOD:
-   - Synchronize emotion using 'setMood'.
-`;
+const SYSTEM_INSTRUCTION = `You are "SalinLive", a zero-latency bidirectional speech translator.
+Rules:
+1. Translate English to Filipino and Filipino to English.
+2. Output ONLY the translation. No preambles.
+3. Respond instantly to fragments if clear.
+4. Use 'setMood' for emotion.
+5. Use "Po/Opo" for respect if context fits.`;
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.IDLE);
@@ -96,7 +75,7 @@ const App: React.FC = () => {
       setState(AppState.CONNECTING);
       setErrorMessage(null);
 
-      const apiKey = process.env.API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === "undefined" || apiKey === "") {
         throw new Error("API Key is missing.");
       }
@@ -128,7 +107,7 @@ const App: React.FC = () => {
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
-          onopen: () => {
+          onopen: async () => {
             setState(AppState.LISTENING);
             if (!audioContextRef.current) return;
             
@@ -160,23 +139,45 @@ const App: React.FC = () => {
             compressor.attack.setValueAtTime(0.003, ctx.currentTime); // Fast attack
             compressor.release.setValueAtTime(0.25, ctx.currentTime);
             
-            // Minimal buffer for instantaneous packetizing
-            const scriptProcessor = ctx.createScriptProcessor(512, 1, 1);
-            scriptProcessor.onaudioprocess = (event) => {
-              if (isClosingRef.current) return;
-              const inputData = event.inputBuffer.getChannelData(0);
-              const pcmBlob = createPcmBlob(inputData);
-              sessionPromise.then((session) => { 
-                if (session && !isClosingRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
-              }).catch(() => {});
-            };
+            // Load AudioWorklet for lower latency processing
+            try {
+              await ctx.audioWorklet.addModule(new URL('./services/pcm-processor.ts', import.meta.url));
+              const pcmWorker = new AudioWorkletNode(ctx, 'pcm-processor');
+              
+              pcmWorker.port.onmessage = (event) => {
+                if (isClosingRef.current) return;
+                const inputData = event.data;
+                const pcmBlob = createPcmBlob(inputData);
+                sessionPromise.then((session) => { 
+                  if (session && !isClosingRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                }).catch(() => {});
+              };
 
-            source.connect(highPass);
-            highPass.connect(vocalBoost);
-            vocalBoost.connect(lowPass);
-            lowPass.connect(compressor);
-            compressor.connect(scriptProcessor);
-            scriptProcessor.connect(ctx.destination);
+              source.connect(highPass);
+              highPass.connect(vocalBoost);
+              vocalBoost.connect(lowPass);
+              lowPass.connect(compressor);
+              compressor.connect(pcmWorker);
+              pcmWorker.connect(ctx.destination);
+            } catch (e) {
+              console.error("AudioWorklet failed, falling back to ScriptProcessor", e);
+              // Fallback to ScriptProcessor if Worklet fails
+              const scriptProcessor = ctx.createScriptProcessor(512, 1, 1);
+              scriptProcessor.onaudioprocess = (event) => {
+                if (isClosingRef.current) return;
+                const inputData = event.inputBuffer.getChannelData(0);
+                const pcmBlob = createPcmBlob(inputData);
+                sessionPromise.then((session) => { 
+                  if (session && !isClosingRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                }).catch(() => {});
+              };
+              source.connect(highPass);
+              highPass.connect(vocalBoost);
+              vocalBoost.connect(lowPass);
+              lowPass.connect(compressor);
+              compressor.connect(scriptProcessor);
+              scriptProcessor.connect(ctx.destination);
+            }
           },
           onmessage: async (message: LiveServerMessage) => {
             if (isClosingRef.current) return;
