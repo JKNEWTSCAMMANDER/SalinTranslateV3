@@ -29,12 +29,12 @@ export function decode(base64: string): Uint8Array {
 /**
  * Decodes raw PCM audio data into an AudioBuffer.
  */
-export async function decodeAudioData(
+export function decodeAudioDataSync(
   data: Uint8Array,
   ctx: AudioContext,
   sampleRate: number,
   numChannels: number,
-): Promise<AudioBuffer> {
+): AudioBuffer {
   const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
