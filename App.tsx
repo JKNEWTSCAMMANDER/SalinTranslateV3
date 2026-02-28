@@ -75,9 +75,9 @@ const App: React.FC = () => {
       setState(AppState.CONNECTING);
       setErrorMessage(null);
 
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
       if (!apiKey || apiKey === "undefined" || apiKey === "") {
-        throw new Error("API Key is missing.");
+        throw new Error("API Key is missing. Please ensure it is set in the environment.");
       }
       
       const ai = new GoogleGenAI({ apiKey });
@@ -96,11 +96,11 @@ const App: React.FC = () => {
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: { 
-          echoCancellation: { exact: true }, // Strict cancellation for clarity
-          noiseSuppression: { exact: true }, // Strict suppression for clarity
-          autoGainControl: { ideal: true }, 
-          channelCount: { exact: 1 }, 
-          sampleRate: { exact: 16000 } // Force 16k if possible
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true, 
+          channelCount: 1, 
+          sampleRate: 16000
         } 
       });
 
