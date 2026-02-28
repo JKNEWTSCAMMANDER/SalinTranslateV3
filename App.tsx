@@ -46,15 +46,59 @@ const App: React.FC = () => {
   const nextStartTimeRef = useRef<number>(0);
   const currentInputTranscription = useRef<string>('');
   const currentOutputTranscription = useRef<string>('');
+  const audioQueueRef = useRef<Uint8Array[]>([]);
+  const isProcessingQueueRef = useRef<boolean>(false);
   const recognitionRef = useRef<any>(null);
   const isClosingRef = useRef<boolean>(false);
 
   useEffect(() => { moodRef.current = mood; }, [mood]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
+  const processAudioQueue = useCallback(async () => {
+    if (isProcessingQueueRef.current || audioQueueRef.current.length === 0) return;
+    isProcessingQueueRef.current = true;
+    
+    while (audioQueueRef.current.length > 0) {
+      const audioData = audioQueueRef.current.shift();
+      if (!audioData || isClosingRef.current) continue;
+      
+      const ctx = outputAudioContextRef.current;
+      if (!ctx) continue;
+      
+      try {
+        if (ctx.state === 'suspended') await ctx.resume();
+        const buffer = await decodeAudioData(audioData, ctx, 24000, 1);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        
+        source.onended = () => {
+          sourcesRef.current.delete(source);
+          if (sourcesRef.current.size === 0 && !isClosingRef.current) setState(AppState.LISTENING);
+        };
+        
+        const now = ctx.currentTime;
+        const lookahead = 0.02;
+        if (nextStartTimeRef.current < now) {
+          nextStartTimeRef.current = now + lookahead;
+        }
+        
+        source.start(nextStartTimeRef.current);
+        nextStartTimeRef.current += buffer.duration;
+        sourcesRef.current.add(source);
+        setState(AppState.SPEAKING);
+      } catch (e) {
+        console.error("Audio playback error:", e);
+      }
+    }
+    
+    isProcessingQueueRef.current = false;
+  }, []);
+
   const cleanupResources = useCallback(async () => {
     isClosingRef.current = true;
     setIsMuted(false);
+    audioQueueRef.current = [];
     if (sessionRef.current) { try { sessionRef.current.close(); } catch (e) {} sessionRef.current = null; }
     if (audioContextRef.current) { try { await audioContextRef.current.close(); } catch (e) {} audioContextRef.current = null; }
     if (outputAudioContextRef.current) { try { await outputAudioContextRef.current.close(); } catch (e) {} outputAudioContextRef.current = null; }
@@ -208,30 +252,20 @@ const App: React.FC = () => {
             }
 
             const serverContent = message.serverContent;
-            const audioData = serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+            
+            // Handle model turn parts (audio/text)
+            const modelTurn = serverContent?.modelTurn;
+            if (modelTurn && modelTurn.parts && !isClosingRef.current) {
+              for (const part of modelTurn.parts) {
+                if (part.inlineData?.data) {
+                  audioQueueRef.current.push(decode(part.inlineData.data));
+                  processAudioQueue();
+                }
+              }
+            }
+
             if (serverContent?.outputTranscription) currentOutputTranscription.current += serverContent.outputTranscription.text || '';
             if (serverContent?.inputTranscription) currentInputTranscription.current += serverContent.inputTranscription.text || '';
-
-            if (audioData && !isClosingRef.current) {
-              const ctx = outputAudioContextRef.current;
-              if (!ctx) return;
-              setState(AppState.SPEAKING);
-              try {
-                const rawData = decode(audioData);
-                const buffer = await decodeAudioData(rawData, ctx, 24000, 1);
-                const source = ctx.createBufferSource();
-                source.buffer = buffer;
-                source.connect(ctx.destination);
-                source.onended = () => {
-                  sourcesRef.current.delete(source);
-                  if (sourcesRef.current.size === 0 && !isClosingRef.current) setState(AppState.LISTENING);
-                };
-                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
-                source.start(nextStartTimeRef.current);
-                nextStartTimeRef.current += buffer.duration;
-                sourcesRef.current.add(source);
-              } catch (e) { console.error(e); }
-            }
 
             if (serverContent?.turnComplete) {
               const output = currentOutputTranscription.current.trim();
@@ -242,6 +276,7 @@ const App: React.FC = () => {
             }
 
             if (serverContent?.interrupted) {
+              audioQueueRef.current = [];
               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
