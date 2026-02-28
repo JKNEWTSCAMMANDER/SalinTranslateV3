@@ -55,6 +55,37 @@ const App: React.FC = () => {
   useEffect(() => { moodRef.current = mood; }, [mood]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
+  // Safety net: if stuck in SPEAKING with no active sources or queued audio, revert to LISTENING
+  useEffect(() => {
+    if (state === AppState.SPEAKING && sourcesRef.current.size === 0 && audioQueueRef.current.length === 0) {
+      const timer = setTimeout(() => {
+        if (state === AppState.SPEAKING && sourcesRef.current.size === 0 && audioQueueRef.current.length === 0) {
+          setState(AppState.LISTENING);
+        }
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [state]);
+
+  // Ensure audio context is resumed when entering LISTENING state
+  useEffect(() => {
+    if (state === AppState.LISTENING) {
+      if (audioContextRef.current?.state === 'suspended') audioContextRef.current.resume();
+    }
+  }, [state]);
+
+  // Handle browser visibility changes to prevent context suspension
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        if (audioContextRef.current?.state === 'suspended') audioContextRef.current.resume();
+        if (outputAudioContextRef.current?.state === 'suspended') outputAudioContextRef.current.resume();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
   const processAudioQueue = useCallback(async () => {
     if (isProcessingQueueRef.current || audioQueueRef.current.length === 0) return;
     isProcessingQueueRef.current = true;
@@ -75,7 +106,7 @@ const App: React.FC = () => {
         
         source.onended = () => {
           sourcesRef.current.delete(source);
-          if (sourcesRef.current.size === 0 && !isClosingRef.current) setState(AppState.LISTENING);
+          if (sourcesRef.current.size === 0 && audioQueueRef.current.length === 0 && !isClosingRef.current) setState(AppState.LISTENING);
         };
         
         const now = ctx.currentTime;
@@ -197,10 +228,22 @@ const App: React.FC = () => {
               
               pcmWorker.port.onmessage = (event) => {
                 if (isClosingRef.current || isMutedRef.current) return;
+                
+                // Ensure input context is running (browsers may suspend it)
+                if (ctx.state === 'suspended') {
+                  ctx.resume().catch(e => console.error("Failed to resume input context:", e));
+                }
+
                 const inputData = event.data;
                 const pcmBlob = createPcmBlob(inputData);
                 sessionPromise.then((session) => { 
-                  if (session && !isClosingRef.current && !isMutedRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                  if (session && !isClosingRef.current && !isMutedRef.current) {
+                    try {
+                      session.sendRealtimeInput({ media: pcmBlob }); 
+                    } catch (e) {
+                      console.error("Failed to send audio data:", e);
+                    }
+                  }
                 }).catch(() => {});
               };
 
@@ -216,10 +259,21 @@ const App: React.FC = () => {
               const scriptProcessor = ctx.createScriptProcessor(512, 1, 1);
               scriptProcessor.onaudioprocess = (event) => {
                 if (isClosingRef.current || isMutedRef.current) return;
+                
+                if (ctx.state === 'suspended') {
+                  ctx.resume().catch(e => console.error("Failed to resume input context (fallback):", e));
+                }
+
                 const inputData = event.inputBuffer.getChannelData(0);
                 const pcmBlob = createPcmBlob(inputData);
                 sessionPromise.then((session) => { 
-                  if (session && !isClosingRef.current && !isMutedRef.current) session.sendRealtimeInput({ media: pcmBlob }); 
+                  if (session && !isClosingRef.current && !isMutedRef.current) {
+                    try {
+                      session.sendRealtimeInput({ media: pcmBlob }); 
+                    } catch (e) {
+                      console.error("Failed to send audio data (fallback):", e);
+                    }
+                  }
                 }).catch(() => {});
               };
               source.connect(highPass);
@@ -275,7 +329,7 @@ const App: React.FC = () => {
               if (output) setTranscripts(prev => [...prev, { role: 'model', text: output, timestamp: Date.now(), mood: moodRef.current }]);
               currentInputTranscription.current = '';
               currentOutputTranscription.current = '';
-              if (sourcesRef.current.size === 0) setState(AppState.LISTENING);
+              if (sourcesRef.current.size === 0 && audioQueueRef.current.length === 0) setState(AppState.LISTENING);
             }
 
             if (serverContent?.interrupted) {
