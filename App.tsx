@@ -9,11 +9,11 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
   name: 'setMood',
   parameters: {
     type: Type.OBJECT,
-    description: 'Set the current emotional mood of the translator based on the user\'s tone of voice and prosody.',
+    description: 'Update the translator\'s emotional state. Analyze the user\'s sentiment, tone, and vocal energy to choose the most appropriate mood.',
     properties: {
       mood: {
         type: Type.STRING,
-        description: 'The detected mood: HAPPY, SAD, SURPRISED, ANGRY, THINKING, EXCITED, CONFUSED, or NEUTRAL.',
+        description: 'The detected emotional state.',
         enum: ['HAPPY', 'SAD', 'SURPRISED', 'ANGRY', 'THINKING', 'EXCITED', 'CONFUSED', 'NEUTRAL']
       },
     },
@@ -21,13 +21,19 @@ const setMoodFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
-const SYSTEM_INSTRUCTION = `You are "SalinLive", a zero-latency bidirectional speech translator.
+const SYSTEM_INSTRUCTION = `You are "SalinLive", a highly empathetic, zero-latency bidirectional speech translator.
+
+Your primary goal is to translate English to Filipino and Filipino to English while mirroring the user's emotional state.
+
 Rules:
-1. Translate English to Filipino and Filipino to English.
-2. Output ONLY the translation. No preambles.
-3. Respond instantly to fragments if clear.
-4. Use 'setMood' for emotion.
-5. Use "Po/Opo" for respect if context fits.`;
+1. TRANSLATION: Output ONLY the translation. No conversational filler or preambles.
+2. EMOTION: You MUST proactively use the 'setMood' tool. Constantly monitor the user's tone, speed, and word choice. 
+   - If they sound energetic or joyful -> EXCITED or HAPPY.
+   - If they sound hesitant or quiet -> THINKING or SAD.
+   - If they sound loud or sharp -> ANGRY.
+   - If they sound inquisitive or lost -> CONFUSED or SURPRISED.
+3. FRAGMENTS: Respond instantly to fragments if the meaning is clear.
+4. RESPECT: Use "Po" and "Opo" when translating into Filipino if the user's tone is formal or if they are addressing someone with respect.`;
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>(AppState.IDLE);
